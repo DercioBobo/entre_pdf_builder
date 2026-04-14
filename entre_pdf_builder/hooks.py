@@ -29,6 +29,9 @@ app_version = "1.0.0"
 # ---------------------------------------------------------------------------
 before_request = ["entre_pdf_builder.utils.renderer.ensure_patch"]
 
+# Suppress the wkhtmltopdf version warning in the browser UI
+app_include_js = ["entre_pdf_builder/public/js/pdf_builder.js"]
+
 # ---------------------------------------------------------------------------
 # Install / uninstall lifecycle
 # ---------------------------------------------------------------------------
