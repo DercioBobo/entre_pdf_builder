@@ -67,11 +67,35 @@ def _launch():
 
     Returns:
         tuple[playwright.sync_api.Playwright, playwright.sync_api.Browser]
+
+    mod_wsgi replaces sys.stderr with an Apache log object that has no real
+    file descriptor.  Playwright's transport calls sys.stderr.fileno() when
+    spawning its Node.js helper process, which raises:
+        OSError: Apache/mod_wsgi log object is not associated with a file descriptor
+    Fix: swap sys.stderr for a real /dev/null fd just for the playwright.start()
+    call, then restore it immediately.  The _lock in get_browser() guarantees
+    only one thread runs this at a time so the swap is safe.
     """
+    import os
+    import sys
     from playwright.sync_api import sync_playwright
 
     args = _get_chromium_args()
-    pw = sync_playwright().start()
+
+    _saved_stderr = sys.stderr
+    _devnull = None
+    try:
+        _devnull = open(os.devnull, "w")
+        sys.stderr = _devnull
+        pw = sync_playwright().start()
+    finally:
+        sys.stderr = _saved_stderr
+        if _devnull is not None:
+            try:
+                _devnull.close()
+            except Exception:
+                pass
+
     browser = pw.chromium.launch(headless=True, args=args)
     logger.info(
         "PDF Builder: Chromium launched (browser id=%s, args=%s)",
