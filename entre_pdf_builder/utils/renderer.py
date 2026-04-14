@@ -133,29 +133,121 @@ def _map_options(options, settings):
 # Backend renderers
 # ---------------------------------------------------------------------------
 
-def _get_site_url():
-    """Return the site's base URL for resolving relative asset paths."""
-    try:
-        import frappe
-        return frappe.utils.get_url()
-    except Exception:
-        return "http://localhost:8000"
-
-
 def _render_playwright(html, options, settings):
     from entre_pdf_builder.utils.browser_pool import get_browser
 
     pw_options = _map_options(options, settings)
     browser = get_browser()
 
-    # Pass the site base URL so Playwright can resolve /assets/… and /files/…
-    context = browser.new_context(base_url=_get_site_url())
+    # Primary: navigate to the live printview URL so the browser loads all
+    # CSS and images exactly as it does for the user.  This is what makes
+    # the PDF match the Chrome print preview.
+    pdf_bytes = _render_via_url(browser, pw_options)
+    if pdf_bytes is not None:
+        return pdf_bytes
+
+    # Fallback (background jobs / email attachments with no request context):
+    # set_content with best-effort asset loading.
+    return _render_via_set_content(browser, html, pw_options)
+
+
+def _render_via_url(browser, pw_options):
+    """
+    Navigate to Frappe's /printview page with the current session cookie so
+    the browser loads all assets (CSS, fonts, letterhead images) naturally.
+
+    Returns PDF bytes, or None if not in a web-request context.
+    """
     try:
+        import frappe
+        from urllib.parse import urlparse, parse_qs, urlencode
+
+        request = getattr(frappe.local, "request", None)
+        if request is None:
+            return None
+
+        request_url = getattr(request, "url", "") or ""
+        if "download_pdf" not in request_url:
+            return None
+
+        # Extract params from the download_pdf URL
+        parsed = urlparse(request_url)
+        params = parse_qs(parsed.query, keep_blank_values=True)
+
+        printview_params = {}
+        for key in ("doctype", "name", "format", "no_letterhead", "letterhead", "_lang"):
+            if key in params:
+                printview_params[key] = params[key][0]
+
+        site_url = frappe.utils.get_url().rstrip("/")
+        printview_url = f"{site_url}/printview?{urlencode(printview_params)}"
+
+        sid = frappe.session.sid
+
+        context = browser.new_context()
+        try:
+            # Authenticate so /files/ images and private assets load
+            if sid and sid != "Guest":
+                context.add_cookies([{
+                    "name": "sid",
+                    "value": sid,
+                    "url": site_url,
+                }])
+
+            page = context.new_page()
+            # Tell the browser to apply @media print rules —
+            # this hides the toolbar and activates print layout
+            page.emulate_media(media="print")
+
+            page.goto(printview_url, wait_until="networkidle", timeout=30000)
+
+            # Extra safety: hide any toolbar elements that survive @media print
+            page.add_style_tag(content="""
+                .print-toolbar, .page-head, .no-print,
+                #toolbar-container, .navbar { display: none !important; }
+            """)
+
+            return page.pdf(**pw_options)
+        finally:
+            context.close()
+
+    except Exception:
+        logger.exception("PDF Builder: URL navigation approach failed, falling back")
+        return None
+
+
+def _render_via_set_content(browser, html, pw_options):
+    """
+    Render using set_content — used for background jobs where there is no
+    HTTP request context.  Assets may not load fully.
+    """
+    try:
+        import frappe
+        site_url = frappe.utils.get_url().rstrip("/")
+    except Exception:
+        site_url = "http://localhost"
+
+    context = browser.new_context(base_url=site_url)
+    try:
+        try:
+            import frappe
+            sid = frappe.session.sid
+            if sid and sid != "Guest":
+                context.add_cookies([{
+                    "name": "sid",
+                    "value": sid,
+                    "url": site_url,
+                }])
+        except Exception:
+            pass
+
         page = context.new_page()
-        # Apply print CSS media — hides toolbar/nav buttons (@media print rules)
-        # and activates print-specific layout, exactly as wkhtmltopdf did.
         page.emulate_media(media="print")
         page.set_content(html, wait_until="networkidle")
+        page.add_style_tag(content="""
+            .print-toolbar, .page-head, .no-print,
+            #toolbar-container, .navbar { display: none !important; }
+        """)
         return page.pdf(**pw_options)
     finally:
         context.close()
