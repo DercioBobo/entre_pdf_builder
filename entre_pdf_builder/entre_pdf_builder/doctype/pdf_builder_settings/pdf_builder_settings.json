@@ -1,0 +1,157 @@
+{
+ "actions": [],
+ "creation": "2024-01-01 00:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "enabled",
+  "renderer",
+  "fallback_to_wkhtmltopdf",
+  "log_render_time",
+  "section_page",
+  "default_page_size",
+  "default_orientation",
+  "column_break_margins",
+  "margin_top",
+  "margin_bottom",
+  "margin_left",
+  "margin_right",
+  "section_chromium",
+  "chromium_args",
+  "section_advanced",
+  "cache_rendered_pdfs",
+  "max_browser_contexts"
+ ],
+ "fields": [
+  {
+   "default": "1",
+   "description": "Master toggle. When unchecked every PDF call falls through to wkhtmltopdf immediately.",
+   "fieldname": "enabled",
+   "fieldtype": "Check",
+   "label": "Enabled"
+  },
+  {
+   "default": "Playwright",
+   "fieldname": "renderer",
+   "fieldtype": "Select",
+   "label": "Renderer",
+   "options": "Playwright\nWeasyPrint\nwkhtmltopdf (default)"
+  },
+  {
+   "default": "1",
+   "description": "If the selected renderer raises an exception, automatically retry with wkhtmltopdf so the user always gets a PDF.",
+   "fieldname": "fallback_to_wkhtmltopdf",
+   "fieldtype": "Check",
+   "label": "Fallback to wkhtmltopdf on error"
+  },
+  {
+   "default": "0",
+   "description": "Log render duration to the Frappe Error Log for performance monitoring.",
+   "fieldname": "log_render_time",
+   "fieldtype": "Check",
+   "label": "Log Render Time"
+  },
+  {
+   "fieldname": "section_page",
+   "fieldtype": "Section Break",
+   "label": "Page Defaults"
+  },
+  {
+   "default": "A4",
+   "fieldname": "default_page_size",
+   "fieldtype": "Select",
+   "label": "Default Page Size",
+   "options": "A4\nA3\nLetter\nLegal"
+  },
+  {
+   "default": "Portrait",
+   "fieldname": "default_orientation",
+   "fieldtype": "Select",
+   "label": "Default Orientation",
+   "options": "Portrait\nLandscape"
+  },
+  {
+   "fieldname": "column_break_margins",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "15mm",
+   "fieldname": "margin_top",
+   "fieldtype": "Data",
+   "label": "Margin Top"
+  },
+  {
+   "default": "15mm",
+   "fieldname": "margin_bottom",
+   "fieldtype": "Data",
+   "label": "Margin Bottom"
+  },
+  {
+   "default": "15mm",
+   "fieldname": "margin_left",
+   "fieldtype": "Data",
+   "label": "Margin Left"
+  },
+  {
+   "default": "15mm",
+   "fieldname": "margin_right",
+   "fieldtype": "Data",
+   "label": "Margin Right"
+  },
+  {
+   "fieldname": "section_chromium",
+   "fieldtype": "Section Break",
+   "label": "Chromium Settings"
+  },
+  {
+   "default": "--no-sandbox\n--disable-dev-shm-usage\n--disable-gpu\n--single-process",
+   "description": "Extra CLI arguments passed to Chromium at launch — one per line. The defaults shown are required on AWS EC2 / Bitnami.",
+   "fieldname": "chromium_args",
+   "fieldtype": "Small Text",
+   "label": "Chromium Launch Arguments"
+  },
+  {
+   "fieldname": "section_advanced",
+   "fieldtype": "Section Break",
+   "label": "Advanced"
+  },
+  {
+   "default": "0",
+   "description": "Reserved for a future caching layer. Has no effect in the current version.",
+   "fieldname": "cache_rendered_pdfs",
+   "fieldtype": "Check",
+   "label": "Cache Rendered PDFs (future)"
+  },
+  {
+   "default": "5",
+   "description": "Reserved for a future browser-context pool. Has no effect in the current version.",
+   "fieldname": "max_browser_contexts",
+   "fieldtype": "Int",
+   "label": "Max Browser Contexts"
+  }
+ ],
+ "is_single": 1,
+ "links": [],
+ "modified": "2024-01-01 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Entre PDF Builder",
+ "name": "PDF Builder Settings",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "track_changes": 0
+}
