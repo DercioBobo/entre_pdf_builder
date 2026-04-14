@@ -67,18 +67,21 @@ def _get_settings():
 
     try:
         s = frappe.get_single("PDF Builder Settings")
+        d = _default_settings()
+        # Single DocType fields return None when never explicitly saved —
+        # fall back to our defaults, NOT to 0/falsy values.
         settings = {
-            "enabled": int(s.enabled or 0),
-            "renderer": s.renderer or "Playwright",
-            "fallback_to_wkhtmltopdf": int(s.fallback_to_wkhtmltopdf or 1),
-            "log_render_time": int(s.log_render_time or 0),
-            "default_page_size": s.default_page_size or "A4",
-            "default_orientation": s.default_orientation or "Portrait",
-            "margin_top": s.margin_top or "15mm",
-            "margin_bottom": s.margin_bottom or "15mm",
-            "margin_left": s.margin_left or "15mm",
-            "margin_right": s.margin_right or "15mm",
-            "chromium_args": s.chromium_args or "",
+            "enabled":                 int(s.enabled)                 if s.enabled                 is not None else d["enabled"],
+            "renderer":                s.renderer                     or d["renderer"],
+            "fallback_to_wkhtmltopdf": int(s.fallback_to_wkhtmltopdf) if s.fallback_to_wkhtmltopdf is not None else d["fallback_to_wkhtmltopdf"],
+            "log_render_time":         int(s.log_render_time)         if s.log_render_time         is not None else d["log_render_time"],
+            "default_page_size":       s.default_page_size            or d["default_page_size"],
+            "default_orientation":     s.default_orientation          or d["default_orientation"],
+            "margin_top":              s.margin_top                   or d["margin_top"],
+            "margin_bottom":           s.margin_bottom                or d["margin_bottom"],
+            "margin_left":             s.margin_left                  or d["margin_left"],
+            "margin_right":            s.margin_right                 or d["margin_right"],
+            "chromium_args":           s.chromium_args                or d["chromium_args"],
         }
     except Exception:
         settings = _default_settings()
@@ -149,6 +152,9 @@ def _render_playwright(html, options, settings):
     context = browser.new_context(base_url=_get_site_url())
     try:
         page = context.new_page()
+        # Apply print CSS media — hides toolbar/nav buttons (@media print rules)
+        # and activates print-specific layout, exactly as wkhtmltopdf did.
+        page.emulate_media(media="print")
         page.set_content(html, wait_until="networkidle")
         return page.pdf(**pw_options)
     finally:
