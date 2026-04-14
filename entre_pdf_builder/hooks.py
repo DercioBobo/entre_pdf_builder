@@ -15,19 +15,17 @@ app_license = "MIT"
 app_version = "1.0.0"
 
 # ---------------------------------------------------------------------------
-# Core override — activates automatically on `bench install-app`.
-# Replaces frappe.utils.pdf.get_pdf for all calls that go through Frappe's
-# whitelisted method dispatch (print button, frappe.call, bulk-print API).
-# ---------------------------------------------------------------------------
-override_whitelisted_methods = {
-    "frappe.utils.pdf.get_pdf": "entre_pdf_builder.utils.renderer.get_pdf",
-}
-
-# ---------------------------------------------------------------------------
-# Guarantee the monkey-patch is applied for every HTTP request.
-# This covers server-side calls (frappe.get_print, email attachments, etc.)
-# that do NOT go through the whitelist.
-# Background workers get patched via __init__.py at import time.
+# Core override strategy (two layers):
+#
+# 1. before_request  — patches frappe.utils.pdf.get_pdf before every HTTP
+#    request.  Covers the print button, email attachments, frappe.get_print,
+#    bulk-print, and any other server-side caller.
+#
+# 2. __init__.py     — patches at import time so background workers and bench
+#    CLI commands are also covered without waiting for a web request.
+#
+# Note: override_whitelisted_methods is intentionally NOT used here because
+# frappe.utils.pdf.get_pdf is an internal utility, not a whitelisted endpoint.
 # ---------------------------------------------------------------------------
 before_request = ["entre_pdf_builder.utils.renderer.ensure_patch"]
 

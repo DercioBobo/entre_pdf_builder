@@ -1,8 +1,4 @@
-# PDF rendering backends
+# Playwright is the only dependency not already provided by Frappe.
+# WeasyPrint and pypdf/PyPDF2 are Frappe's own pinned dependencies —
+# declaring them here would cause version conflicts on bench get-app.
 playwright>=1.40.0
-weasyprint>=60.0
-
-# PDF merging (PdfFileWriter output= contract)
-# pypdf is the maintained fork; PyPDF2 kept as fallback alias
-pypdf>=3.0.0
-PyPDF2>=3.0.0

@@ -43,8 +43,7 @@ def _default_settings():
         "chromium_args": (
             "--no-sandbox\n"
             "--disable-dev-shm-usage\n"
-            "--disable-gpu\n"
-            "--single-process"
+            "--disable-gpu"
         ),
     }
 
@@ -131,13 +130,23 @@ def _map_options(options, settings):
 # Backend renderers
 # ---------------------------------------------------------------------------
 
+def _get_site_url():
+    """Return the site's base URL for resolving relative asset paths."""
+    try:
+        import frappe
+        return frappe.utils.get_url()
+    except Exception:
+        return "http://localhost:8000"
+
+
 def _render_playwright(html, options, settings):
     from entre_pdf_builder.utils.browser_pool import get_browser
 
     pw_options = _map_options(options, settings)
     browser = get_browser()
 
-    context = browser.new_context()
+    # Pass the site base URL so Playwright can resolve /assets/… and /files/…
+    context = browser.new_context(base_url=_get_site_url())
     try:
         page = context.new_page()
         page.set_content(html, wait_until="networkidle")

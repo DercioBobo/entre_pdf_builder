@@ -114,7 +114,7 @@ configuration files or environment variables are required.
 | **Default Page Size** | A4 | `A4`, `A3`, `Letter`, `Legal`. Overridden by per-format options. |
 | **Default Orientation** | Portrait | `Portrait` or `Landscape`. Overridden by per-format options. |
 | **Margin Top/Bottom/Left/Right** | 15mm | CSS-compatible values (`mm`, `cm`, `in`, `px`). |
-| **Chromium Launch Arguments** | *(EC2 defaults)* | Extra CLI args for Chromium, one per line. |
+| **Chromium Launch Arguments** | `--no-sandbox` `--disable-dev-shm-usage` `--disable-gpu` | Extra CLI args for Chromium, one per line. `--single-process` was removed from Chromium in 2022 — do not add it. |
 | **Cache Rendered PDFs** | ✗ | Reserved for a future caching layer. |
 | **Max Browser Contexts** | 5 | Reserved for a future context pool. |
 

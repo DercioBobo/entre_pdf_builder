@@ -45,7 +45,6 @@ def _get_chromium_args():
         "--no-sandbox",
         "--disable-dev-shm-usage",
         "--disable-gpu",
-        "--single-process",
     ]
     try:
         import frappe
