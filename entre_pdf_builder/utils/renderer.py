@@ -312,11 +312,21 @@ def get_pdf(html, options=None, output=None):
 
 def ensure_patch():
     """
-    Guarantee that ``frappe.utils.pdf.get_pdf`` points to our implementation.
+    Guarantee that every known Frappe call-site for get_pdf points to our
+    implementation.
+
+    Two levels are required:
+    1. frappe.utils.pdf.get_pdf       — the module attribute (covers any code
+                                        that accesses it via the module object).
+    2. Per-module local bindings       — modules that did
+                                        ``from frappe.utils.pdf import get_pdf``
+                                        at import time hold a reference to the
+                                        original function; we overwrite those
+                                        bindings directly.
 
     Safe to call multiple times (idempotent).  Called:
       - At module import time (covers background workers and CLI).
-      - Via the ``before_request`` hook (covers web workers on each request).
+      - Via the ``before_request`` hook on every HTTP request.
     """
     try:
         import frappe.utils.pdf as _pdf_mod
@@ -325,7 +335,32 @@ def ensure_patch():
             _pdf_mod.get_pdf = get_pdf
             _pdf_mod._entre_patched = True
     except Exception:
-        logger.exception("PDF Builder: ensure_patch failed")
+        logger.exception("PDF Builder: could not patch frappe.utils.pdf")
+
+    # frappe.utils.print_format — powers the PDF print button and
+    # frappe.utils.print_format.download_pdf (the endpoint the UI calls).
+    try:
+        import frappe.utils.print_format as _print_format
+        if getattr(_print_format, "get_pdf", None) is not get_pdf:
+            _print_format.get_pdf = get_pdf
+    except Exception:
+        pass
+
+    # frappe.model.print_format — older Frappe versions route through here.
+    try:
+        import frappe.model.print_format as _model_pf
+        if getattr(_model_pf, "get_pdf", None) is not get_pdf:
+            _model_pf.get_pdf = get_pdf
+    except Exception:
+        pass
+
+    # frappe.utils.pdf (re-check the module-level alias some callers use)
+    try:
+        import frappe
+        if getattr(frappe.utils, "get_pdf", None) is not None:
+            frappe.utils.get_pdf = get_pdf
+    except Exception:
+        pass
 
 
 # Apply patch the moment this module is imported.
