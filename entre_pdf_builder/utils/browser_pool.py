@@ -82,6 +82,23 @@ def _launch():
 
     args = _get_chromium_args()
 
+    # mod_wsgi daemon processes often run as a different OS user (e.g. "daemon")
+    # whose $HOME has no ~/.cache/ms-playwright.  Probe the most likely locations
+    # and set PLAYWRIGHT_BROWSERS_PATH explicitly so Playwright finds Chromium
+    # regardless of which user the worker runs as.
+    if "PLAYWRIGHT_BROWSERS_PATH" not in os.environ:
+        candidates = [
+            os.path.join(os.path.expanduser("~"), ".cache", "ms-playwright"),
+            "/home/bitnami/.cache/ms-playwright",
+            "/opt/bitnami/.cache/ms-playwright",
+            "/root/.cache/ms-playwright",
+        ]
+        for candidate in candidates:
+            if os.path.isdir(candidate):
+                os.environ["PLAYWRIGHT_BROWSERS_PATH"] = candidate
+                logger.info("PDF Builder: using browsers at %s", candidate)
+                break
+
     _saved_stderr = sys.stderr
     _devnull = None
     try:
