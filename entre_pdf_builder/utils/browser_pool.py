@@ -1,46 +1,79 @@
 """
 entre_pdf_builder.utils.browser_pool
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-Thread-safe persistent Chromium singleton.
+Thread-local Chromium browser pool for Playwright sync API.
 
-Design
-------
-* One ``sync_playwright`` instance + one ``Browser`` object live for the
-  lifetime of the process.
-* Each render call opens a fresh ``BrowserContext`` (isolated from others)
-  and closes it immediately after — the browser itself stays warm.
-* A ``threading.Lock`` serialises launch/reconnect so multiple workers that
-  start simultaneously don't race to create duplicate browsers.
-* If the browser crashes or disconnects ``get_browser()`` transparently
-  relaunches it on the next call.
-* ``close_browser()`` is registered with ``atexit`` so Chromium is cleaned
-  up even if the process exits unexpectedly.
+Why thread-local?
+-----------------
+Playwright's sync API uses greenlets internally.  A ``sync_playwright()``
+instance and the Browser object it produces are bound to the OS thread (and
+greenlet dispatcher) that called ``sync_playwright().start()``.
+
+Apache/mod_wsgi dispatches each HTTP request on a thread from its pool.
+A naive global singleton would be created on thread-A and then accessed on
+thread-B, causing::
+
+    greenlet.error: Cannot switch to a different thread
+
+The fix: each thread keeps its own ``(playwright, browser)`` pair in
+``threading.local()``.  On a typical mod_wsgi server with 5 threads, up to
+5 Chromium processes run — acceptable and more reliable than sharing one.
+
+Public interface
+----------------
+``get_browser()``   — returns the Browser for the calling thread, launching
+                      it on first call or after a crash.
+``close_browser()`` — closes all browsers across all threads (called on
+                      app shutdown via atexit).
 """
 from __future__ import unicode_literals
 
 import atexit
 import logging
+import os
+import sys
 import threading
 
 logger = logging.getLogger(__name__)
 
-_lock = threading.Lock()
-_playwright_instance = None
-_browser = None
+# Thread-local storage: each thread has its own .pw and .browser
+_local = threading.local()
+
+# Global registry so close_browser() can clean up every thread's instance
+_registry_lock = threading.Lock()
+_registry = []  # list of (playwright_instance, browser)
 
 
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _get_chromium_args():
+def _ensure_browsers_path():
     """
-    Return the list of Chromium CLI arguments.
+    Set PLAYWRIGHT_BROWSERS_PATH if not already set.
 
-    Reads ``chromium_args`` from PDF Builder Settings and merges with the
-    hard EC2-safe defaults.  Falls back to defaults only if Frappe or the
-    DocType is unavailable (e.g. during tests or early startup).
+    mod_wsgi daemon processes run as a different OS user (e.g. ``daemon``)
+    whose $HOME has no ~/.cache/ms-playwright.  We probe the most likely
+    locations so Playwright can find Chromium regardless of which user the
+    worker runs as.
     """
+    if "PLAYWRIGHT_BROWSERS_PATH" in os.environ:
+        return
+    candidates = [
+        os.path.join(os.path.expanduser("~"), ".cache", "ms-playwright"),
+        "/home/bitnami/.cache/ms-playwright",
+        "/opt/bitnami/.cache/ms-playwright",
+        "/root/.cache/ms-playwright",
+    ]
+    for candidate in candidates:
+        if os.path.isdir(candidate):
+            os.environ["PLAYWRIGHT_BROWSERS_PATH"] = candidate
+            logger.info("PDF Builder: using browsers at %s", candidate)
+            return
+
+
+def _get_chromium_args():
+    """Return Chromium launch arguments from settings, merged with EC2 defaults."""
     defaults = [
         "--no-sandbox",
         "--disable-dev-shm-usage",
@@ -48,9 +81,7 @@ def _get_chromium_args():
     ]
     try:
         import frappe
-        raw = frappe.db.get_single_value(
-            "PDF Builder Settings", "chromium_args"
-        ) or ""
+        raw = frappe.db.get_single_value("PDF Builder Settings", "chromium_args") or ""
         extra = [
             line.strip()
             for line in raw.splitlines()
@@ -61,73 +92,52 @@ def _get_chromium_args():
         return defaults
 
 
-def _launch():
+def _launch_for_thread():
     """
-    Start a new Playwright instance and launch Chromium.
+    Start a new ``sync_playwright`` instance and launch Chromium for the
+    calling thread.  Stores the pair in ``_local`` and registers it in
+    ``_registry`` for global cleanup.
 
     Returns:
-        tuple[playwright.sync_api.Playwright, playwright.sync_api.Browser]
-
-    mod_wsgi replaces sys.stderr with an Apache log object that has no real
-    file descriptor.  Playwright's transport calls sys.stderr.fileno() when
-    spawning its Node.js helper process, which raises:
-        OSError: Apache/mod_wsgi log object is not associated with a file descriptor
-    Fix: swap sys.stderr for a real /dev/null fd just for the playwright.start()
-    call, then restore it immediately.  The _lock in get_browser() guarantees
-    only one thread runs this at a time so the swap is safe.
+        playwright.sync_api.Browser
     """
-    import os
-    import sys
     from playwright.sync_api import sync_playwright
 
+    _ensure_browsers_path()
     args = _get_chromium_args()
 
-    # mod_wsgi daemon processes often run as a different OS user (e.g. "daemon")
-    # whose $HOME has no ~/.cache/ms-playwright.  Probe the most likely locations
-    # and set PLAYWRIGHT_BROWSERS_PATH explicitly so Playwright finds Chromium
-    # regardless of which user the worker runs as.
-    if "PLAYWRIGHT_BROWSERS_PATH" not in os.environ:
-        candidates = [
-            os.path.join(os.path.expanduser("~"), ".cache", "ms-playwright"),
-            "/home/bitnami/.cache/ms-playwright",
-            "/opt/bitnami/.cache/ms-playwright",
-            "/root/.cache/ms-playwright",
-        ]
-        for candidate in candidates:
-            if os.path.isdir(candidate):
-                os.environ["PLAYWRIGHT_BROWSERS_PATH"] = candidate
-                logger.info("PDF Builder: using browsers at %s", candidate)
-                break
-
-    _saved_stderr = sys.stderr
-    _devnull = None
+    # mod_wsgi replaces sys.stderr with an Apache log object that has no real
+    # file descriptor.  Playwright calls sys.stderr.fileno() when spawning its
+    # Node.js helper, which raises OSError.  Swap it for a real /dev/null fd
+    # just for the duration of the start() call.
+    saved_stderr = sys.stderr
+    devnull = None
     try:
-        _devnull = open(os.devnull, "w")
-        sys.stderr = _devnull
+        devnull = open(os.devnull, "w")
+        sys.stderr = devnull
         pw = sync_playwright().start()
     finally:
-        sys.stderr = _saved_stderr
-        if _devnull is not None:
+        sys.stderr = saved_stderr
+        if devnull is not None:
             try:
-                _devnull.close()
+                devnull.close()
             except Exception:
                 pass
 
     browser = pw.chromium.launch(headless=True, args=args)
     logger.info(
-        "PDF Builder: Chromium launched (browser id=%s, args=%s)",
+        "PDF Builder: Chromium launched for thread %s (browser id=%s)",
+        threading.current_thread().name,
         id(browser),
-        args,
     )
-    return pw, browser
 
+    _local.pw = pw
+    _local.browser = browser
 
-def _is_connected(browser):
-    """Return True if *browser* is still alive."""
-    try:
-        return browser.is_connected()
-    except Exception:
-        return False
+    with _registry_lock:
+        _registry.append((pw, browser))
+
+    return browser
 
 
 # ---------------------------------------------------------------------------
@@ -136,61 +146,53 @@ def _is_connected(browser):
 
 def get_browser():
     """
-    Return the singleton Chromium Browser instance.
+    Return the Chromium Browser for the calling thread.
 
-    Launches it on first call and auto-reconnects if it has crashed.
-    Thread-safe.
-
-    Raises:
-        Exception: propagated from Playwright if Chromium cannot be launched.
+    Launches a new instance on first call or after a crash/disconnect.
+    Never raises — callers handle exceptions and fall back to wkhtmltopdf.
     """
-    global _playwright_instance, _browser
+    browser = getattr(_local, "browser", None)
 
-    # Fast path — no lock needed when browser is healthy
-    if _browser is not None and _is_connected(_browser):
-        return _browser
+    if browser is not None:
+        try:
+            if browser.is_connected():
+                return browser
+        except Exception:
+            pass
+        logger.warning(
+            "PDF Builder: browser disconnected on thread %s, relaunching",
+            threading.current_thread().name,
+        )
+        _local.browser = None
+        _local.pw = None
 
-    with _lock:
-        # Re-check under the lock (another thread may have launched it)
-        if _browser is not None and _is_connected(_browser):
-            return _browser
-
-        # Browser is gone or was never started
-        if _browser is not None:
-            logger.warning("PDF Builder: browser disconnected, relaunching…")
-            _browser = None
-
-        pw, browser = _launch()
-        _playwright_instance = pw
-        _browser = browser
-        return _browser
+    return _launch_for_thread()
 
 
 def close_browser():
     """
-    Gracefully close the Chromium browser and stop the Playwright driver.
-
-    Called automatically via ``atexit`` and explicitly from
-    ``entre_pdf_builder.install.after_uninstall``.
+    Close all Chromium browsers and stop all Playwright instances across
+    every thread.  Called automatically via atexit and from after_uninstall.
     """
-    global _playwright_instance, _browser
+    with _registry_lock:
+        instances = list(_registry)
+        _registry.clear()
 
-    with _lock:
-        if _browser is not None:
-            try:
-                _browser.close()
-                logger.info("PDF Builder: Chromium browser closed.")
-            except Exception:
-                logger.exception("PDF Builder: error while closing browser")
-            _browser = None
+    for pw, browser in instances:
+        try:
+            browser.close()
+        except Exception:
+            pass
+        try:
+            pw.stop()
+        except Exception:
+            pass
 
-        if _playwright_instance is not None:
-            try:
-                _playwright_instance.stop()
-            except Exception:
-                logger.exception("PDF Builder: error while stopping Playwright")
-            _playwright_instance = None
+    # Also clean up the calling thread's locals
+    _local.browser = None
+    _local.pw = None
+    logger.info("PDF Builder: all Chromium instances closed.")
 
 
-# Register shutdown handler so Chromium is always cleaned up on process exit.
+# Ensure cleanup on process exit
 atexit.register(close_browser)
