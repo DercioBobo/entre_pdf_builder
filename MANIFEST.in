@@ -1,0 +1,2 @@
+recursive-include entre_pdf_builder *.json *.js *.css *.html *.txt *.md
+global-exclude *.pyc __pycache__

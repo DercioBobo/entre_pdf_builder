@@ -1,0 +1,2 @@
+# Patch files are executed in order by `bench migrate`.
+# Add future data-migration patches here, one dotted path per line.
