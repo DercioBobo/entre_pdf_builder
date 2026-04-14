@@ -108,6 +108,43 @@ def get_pdf_for_whatsapp(doctype, name, print_format=None):
 
 
 @frappe.whitelist()
+def download_pdf_playwright(doctype, name, print_format=None, letterhead=None,
+                            no_letterhead=0, lang=None):
+    """
+    Direct Playwright PDF download — completely bypasses wkhtmltopdf and
+    Frappe's PDF pipeline.  Navigates to /printview with the current session
+    cookie so every asset (CSS, fonts, images) loads exactly as in the browser.
+
+    Called from the custom PDF button injected by pdf_builder.js.
+    """
+    frappe.has_permission(doctype, doc=name, throw=True)
+
+    try:
+        from entre_pdf_builder.utils.renderer import render_printview_to_pdf
+
+        pdf_bytes = render_printview_to_pdf(
+            doctype=doctype,
+            name=name,
+            print_format=print_format,
+            letterhead=letterhead,
+            no_letterhead=int(no_letterhead or 0),
+            lang=lang,
+        )
+
+        filename = f"{frappe.scrub(name)}.pdf"
+        frappe.local.response.filename = filename
+        frappe.local.response.filecontent = pdf_bytes
+        frappe.local.response.type = "pdf"
+
+    except Exception:
+        frappe.log_error(
+            title="PDF Builder: download_pdf_playwright failed",
+            message=frappe.get_traceback(),
+        )
+        raise
+
+
+@frappe.whitelist()
 def attach_pdf_to_doc(doctype, name, print_format=None):
     """
     Render a document to PDF and save it as a private File attachment.

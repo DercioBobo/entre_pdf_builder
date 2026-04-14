@@ -463,3 +463,57 @@ def ensure_patch():
 
 # Apply patch the moment this module is imported.
 ensure_patch()
+
+
+# ---------------------------------------------------------------------------
+# Direct Playwright renderer — navigates to /printview, no set_content
+# ---------------------------------------------------------------------------
+
+def render_printview_to_pdf(doctype, name, print_format=None, letterhead=None,
+                            no_letterhead=0, lang=None):
+    """
+    Navigate to Frappe's /printview page with the current session cookie and
+    render to PDF.  This is the most faithful path: CSS, fonts and images all
+    load exactly as they do in the user's browser.
+
+    Used by the custom PDF button (api.download_pdf_playwright).
+    """
+    import frappe
+    from urllib.parse import urlencode
+    from entre_pdf_builder.utils.browser_pool import get_browser
+
+    settings = _get_settings()
+    pw_options = _map_options({}, settings)
+
+    site_url = frappe.utils.get_url().rstrip("/")
+
+    params = {"doctype": doctype, "name": name, "no_letterhead": no_letterhead or 0}
+    if print_format:
+        params["format"] = print_format
+    if letterhead:
+        params["letterhead"] = letterhead
+    if lang:
+        params["_lang"] = lang
+
+    printview_url = f"{site_url}/printview?{urlencode(params)}"
+    sid = frappe.session.sid
+
+    browser = get_browser()
+    context = browser.new_context()
+    try:
+        if sid and sid != "Guest":
+            context.add_cookies([{"name": "sid", "value": sid, "url": site_url}])
+
+        page = context.new_page()
+        page.emulate_media(media="print")
+        page.goto(printview_url, wait_until="networkidle", timeout=30000)
+
+        # Hide toolbar elements that survive @media print
+        page.add_style_tag(content="""
+            .print-toolbar, .page-head, .no-print,
+            #toolbar-container, .navbar { display: none !important; }
+        """)
+
+        return page.pdf(**pw_options)
+    finally:
+        context.close()
