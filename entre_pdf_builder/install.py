@@ -12,12 +12,17 @@ def after_install():
     """
     Called by `bench install-app entre_pdf_builder`.
 
-    For Single DocTypes Frappe creates the record automatically during
-    `bench migrate`; defaults come from the DocType JSON field definitions.
-    This hook just logs a confirmation and forces a commit so the record
-    is visible immediately.
+    Ensures the PDF Builder Settings DocType is marked as a Single in the
+    database (the JSON declares is_single=1 but Frappe's sync can miss it
+    in some versions) and commits the defaults so the record is visible
+    immediately without a manual bench migrate.
     """
     try:
+        # Force issingle=1 in the database — idempotent and safe to call
+        # even when the JSON sync worked correctly.
+        frappe.db.sql(
+            "UPDATE `tabDocType` SET `issingle` = 1 WHERE `name` = 'PDF Builder Settings'"
+        )
         frappe.db.commit()
         frappe.msgprint(
             "Entre PDF Builder installed successfully. "
