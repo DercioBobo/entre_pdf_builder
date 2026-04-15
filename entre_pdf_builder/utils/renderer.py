@@ -130,10 +130,39 @@ def _map_options(options, settings):
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Asyncio guard — Playwright sync API cannot run inside a running event loop
+# ---------------------------------------------------------------------------
+
+def _asyncio_is_running():
+    """Return True if the calling thread has a running asyncio event loop."""
+    try:
+        import asyncio
+        return asyncio.get_event_loop().is_running()
+    except Exception:
+        return False
+
+
+def _run_in_thread(fn, *args, **kwargs):
+    """
+    Submit *fn* to a one-off ThreadPoolExecutor thread that has no asyncio
+    event loop, then block until the result is ready.
+
+    Used to escape an asyncio loop before calling Playwright sync API.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        return ex.submit(fn, *args, **kwargs).result()
+
+
+# ---------------------------------------------------------------------------
 # Backend renderers
 # ---------------------------------------------------------------------------
 
 def _render_playwright(html, options, settings):
+    if _asyncio_is_running():
+        return _run_in_thread(_render_playwright, html, options, settings)
+
     from entre_pdf_builder.utils.browser_pool import get_browser
 
     pw_options = _map_options(options, settings)
@@ -519,6 +548,12 @@ def render_printview_to_pdf(doctype, name, print_format=None, letterhead=None,
 
     Used by the custom PDF button (api.download_pdf_playwright).
     """
+    if _asyncio_is_running():
+        return _run_in_thread(
+            render_printview_to_pdf,
+            doctype, name, print_format, letterhead, no_letterhead, lang,
+        )
+
     import frappe
     from urllib.parse import urlencode
     from entre_pdf_builder.utils.browser_pool import get_browser
