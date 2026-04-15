@@ -221,10 +221,7 @@ def _render_via_set_content(browser, html, pw_options):
     Render using set_content — used for background jobs where there is no
     HTTP request context.  Assets may not load fully.
     """
-    try:
-        site_url = _get_base_url()
-    except Exception:
-        site_url = "http://localhost"
+    site_url = _get_base_url()
 
     context = browser.new_context(base_url=site_url)
     try:
@@ -470,16 +467,20 @@ ensure_patch()
 
 def _get_base_url():
     """
-    Derive the site base URL (scheme + host) from the current HTTP request.
-    Falls back to frappe.utils.get_url() and then to http://localhost.
+    Derive the site base URL (scheme + host) from the live HTTP request.
 
-    Using the request URL is the most reliable source — it is the URL the
-    user's browser successfully connected to, so Playwright can too.
+    The request URL is the definitive source — it is exactly the address the
+    user's browser connected to, so Playwright will be able to reach it too.
+    We intentionally do NOT fall back to frappe.utils.get_url() / site_config,
+    because the configured hostname may differ from the IP/domain currently in
+    use (e.g. EC2 public IP vs. internal hostname).
+
+    For background jobs where no request is in flight, fall back to
+    http://127.0.0.1 so Playwright connects over the loopback interface.
     """
     import frappe
     from urllib.parse import urlparse
 
-    # Best source: the actual request in progress
     try:
         request = getattr(frappe.local, "request", None)
         if request and getattr(request, "url", None):
@@ -489,15 +490,9 @@ def _get_base_url():
     except Exception:
         pass
 
-    # Second: frappe.utils.get_url() — sanitise to ensure it is a real URL
-    try:
-        url = (frappe.utils.get_url() or "").strip().rstrip("/")
-        if url.startswith(("http://", "https://")):
-            return url
-    except Exception:
-        pass
-
-    return "http://localhost"
+    # No active request (background job / bench command) — use loopback so
+    # Playwright can reach the local Frappe/Gunicorn/Apache process.
+    return "http://127.0.0.1"
 
 
 def render_printview_to_pdf(doctype, name, print_format=None, letterhead=None,
