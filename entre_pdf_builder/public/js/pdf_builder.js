@@ -12,15 +12,26 @@
 frappe.ready(function () {
 
     // ── 1. Suppress wkhtmltopdf warning ────────────────────────────────────
+    function _contains_wkhtmltopdf(options) {
+        var msg = (typeof options === "string") ? options
+            : (options && (options.message || options.msg || options.title || ""));
+        return msg && msg.toLowerCase().indexOf("wkhtmltopdf") !== -1;
+    }
+
     var _orig_msgprint = frappe.msgprint.bind(frappe);
     frappe.msgprint = function (options) {
-        var msg = (typeof options === "string") ? options
-            : (options && (options.message || options.msg || ""));
-        if (msg && msg.toLowerCase().indexOf("wkhtmltopdf") !== -1) {
-            return; // swallow — PDF Builder uses Playwright
-        }
+        if (_contains_wkhtmltopdf(options)) return;
         return _orig_msgprint(options);
     };
+
+    // frappe.show_alert is a separate channel Frappe sometimes uses
+    if (frappe.show_alert) {
+        var _orig_show_alert = frappe.show_alert.bind(frappe);
+        frappe.show_alert = function (options, seconds) {
+            if (_contains_wkhtmltopdf(options)) return;
+            return _orig_show_alert(options, seconds);
+        };
+    }
 
 
     // ── Shared: build the Playwright download URL ───────────────────────────

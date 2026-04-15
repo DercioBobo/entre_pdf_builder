@@ -456,6 +456,21 @@ def ensure_patch():
     except Exception:
         pass
 
+    # Suppress the "Invalid wkhtmltopdf version" warning.
+    # Frappe's print controller calls get_wkhtmltopdf_version() independently
+    # of get_pdf — if it finds a bad/missing binary it sends a server-side
+    # frappe.msgprint() warning to the browser.  Returning a valid-looking
+    # version string makes that check pass silently.
+    try:
+        import frappe.utils.pdf as _pdf_mod2
+        if not getattr(_pdf_mod2, "_entre_version_patched", False):
+            def _fake_wkhtmltopdf_version():
+                return "wkhtmltopdf 0.12.6 (with patched qt)"
+            _pdf_mod2.get_wkhtmltopdf_version = _fake_wkhtmltopdf_version
+            _pdf_mod2._entre_version_patched = True
+    except Exception:
+        pass
+
 
 # Apply patch the moment this module is imported.
 ensure_patch()
