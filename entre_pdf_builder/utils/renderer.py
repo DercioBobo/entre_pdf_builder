@@ -179,7 +179,7 @@ def _render_via_url(browser, pw_options):
             if key in params:
                 printview_params[key] = params[key][0]
 
-        site_url = frappe.utils.get_url().rstrip("/")
+        site_url = _get_base_url()
         printview_url = f"{site_url}/printview?{urlencode(printview_params)}"
 
         sid = frappe.session.sid
@@ -222,8 +222,7 @@ def _render_via_set_content(browser, html, pw_options):
     HTTP request context.  Assets may not load fully.
     """
     try:
-        import frappe
-        site_url = frappe.utils.get_url().rstrip("/")
+        site_url = _get_base_url()
     except Exception:
         site_url = "http://localhost"
 
@@ -469,6 +468,38 @@ ensure_patch()
 # Direct Playwright renderer — navigates to /printview, no set_content
 # ---------------------------------------------------------------------------
 
+def _get_base_url():
+    """
+    Derive the site base URL (scheme + host) from the current HTTP request.
+    Falls back to frappe.utils.get_url() and then to http://localhost.
+
+    Using the request URL is the most reliable source — it is the URL the
+    user's browser successfully connected to, so Playwright can too.
+    """
+    import frappe
+    from urllib.parse import urlparse
+
+    # Best source: the actual request in progress
+    try:
+        request = getattr(frappe.local, "request", None)
+        if request and getattr(request, "url", None):
+            p = urlparse(request.url)
+            if p.scheme and p.netloc:
+                return f"{p.scheme}://{p.netloc}"
+    except Exception:
+        pass
+
+    # Second: frappe.utils.get_url() — sanitise to ensure it is a real URL
+    try:
+        url = (frappe.utils.get_url() or "").strip().rstrip("/")
+        if url.startswith(("http://", "https://")):
+            return url
+    except Exception:
+        pass
+
+    return "http://localhost"
+
+
 def render_printview_to_pdf(doctype, name, print_format=None, letterhead=None,
                             no_letterhead=0, lang=None):
     """
@@ -485,7 +516,7 @@ def render_printview_to_pdf(doctype, name, print_format=None, letterhead=None,
     settings = _get_settings()
     pw_options = _map_options({}, settings)
 
-    site_url = frappe.utils.get_url().rstrip("/")
+    base_url = _get_base_url()
 
     params = {"doctype": doctype, "name": name, "no_letterhead": no_letterhead or 0}
     if print_format:
@@ -495,14 +526,15 @@ def render_printview_to_pdf(doctype, name, print_format=None, letterhead=None,
     if lang:
         params["_lang"] = lang
 
-    printview_url = f"{site_url}/printview?{urlencode(params)}"
-    sid = frappe.session.sid
+    printview_url = f"{base_url}/printview?{urlencode(params)}"
+    logger.info("PDF Builder: navigating to %s", printview_url)
 
+    sid = frappe.session.sid
     browser = get_browser()
     context = browser.new_context()
     try:
         if sid and sid != "Guest":
-            context.add_cookies([{"name": "sid", "value": sid, "url": site_url}])
+            context.add_cookies([{"name": "sid", "value": sid, "url": base_url}])
 
         page = context.new_page()
         page.emulate_media(media="print")
