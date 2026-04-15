@@ -9,29 +9,47 @@
  *    ever leaving the document.
  */
 
-frappe.ready(function () {
-
-    // ── 1. Suppress wkhtmltopdf warning ────────────────────────────────────
+// ── 1. Suppress wkhtmltopdf warning — runs immediately, before frappe.ready
+//       so we win the race against Frappe's own version-check call.
+// ─────────────────────────────────────────────────────────────────────────────
+(function () {
     function _contains_wkhtmltopdf(options) {
         var msg = (typeof options === "string") ? options
             : (options && (options.message || options.msg || options.title || ""));
-        return msg && msg.toLowerCase().indexOf("wkhtmltopdf") !== -1;
+        return !!(msg && msg.toLowerCase().indexOf("wkhtmltopdf") !== -1);
     }
 
-    var _orig_msgprint = frappe.msgprint.bind(frappe);
-    frappe.msgprint = function (options) {
-        if (_contains_wkhtmltopdf(options)) return;
-        return _orig_msgprint(options);
-    };
+    // frappe.msgprint
+    if (frappe && frappe.msgprint) {
+        var _orig_msgprint = frappe.msgprint.bind(frappe);
+        frappe.msgprint = function (options) {
+            if (_contains_wkhtmltopdf(options)) return;
+            return _orig_msgprint(options);
+        };
+    }
 
-    // frappe.show_alert is a separate channel Frappe sometimes uses
-    if (frappe.show_alert) {
+    // frappe.show_alert  (toast-style warnings)
+    if (frappe && frappe.show_alert) {
         var _orig_show_alert = frappe.show_alert.bind(frappe);
         frappe.show_alert = function (options, seconds) {
             if (_contains_wkhtmltopdf(options)) return;
             return _orig_show_alert(options, seconds);
         };
     }
+
+    // frappe.throw  (error modal — belt-and-suspenders)
+    if (frappe && frappe.throw) {
+        var _orig_throw = frappe.throw.bind(frappe);
+        frappe.throw = function (options) {
+            if (_contains_wkhtmltopdf(options)) return;
+            return _orig_throw(options);
+        };
+    }
+})();
+// ─────────────────────────────────────────────────────────────────────────────
+
+
+frappe.ready(function () {
 
 
     // ── Shared: build the Playwright download URL ───────────────────────────
