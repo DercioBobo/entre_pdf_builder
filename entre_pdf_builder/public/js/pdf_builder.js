@@ -4,6 +4,9 @@
  * 1. Suppresses the "Invalid wkhtmltopdf version" warning.
  * 2. On the /printview page, replaces the "Get PDF" button with one that
  *    calls our Playwright endpoint directly.
+ * 3. On every Form page, adds a "PDF (Playwright)" button inside the
+ *    Print menu so the user can download a pixel-perfect PDF without
+ *    ever leaving the document.
  */
 
 frappe.ready(function () {
@@ -19,9 +22,19 @@ frappe.ready(function () {
         return _orig_msgprint(options);
     };
 
+
+    // ── Shared: build the Playwright download URL ───────────────────────────
+    function playwright_pdf_url(doctype, name, print_format, letterhead) {
+        var args = { doctype: doctype, name: name };
+        if (print_format)  args.print_format  = print_format;
+        if (letterhead)    args.letterhead     = letterhead;
+        return "/api/method/entre_pdf_builder.api.download_pdf_playwright?"
+            + new URLSearchParams(args).toString();
+    }
+
+
     // ── 2. Replace "Get PDF" on the printview page ─────────────────────────
     function install_playwright_button() {
-        // Build download URL from current printview query params
         var qs   = new URLSearchParams(window.location.search);
         var args = {
             doctype:       qs.get("doctype")       || "",
@@ -35,7 +48,7 @@ frappe.ready(function () {
         var pdf_url = "/api/method/entre_pdf_builder.api.download_pdf_playwright?"
             + new URLSearchParams(args).toString();
 
-        // Override every element whose text is "Get PDF" or contains "pdf"
+        // Override every element whose text is "Get PDF" or "pdf"
         document.querySelectorAll("a, button").forEach(function (el) {
             var txt = (el.innerText || el.textContent || "").trim().toLowerCase();
             if (txt === "get pdf" || txt === "pdf") {
@@ -47,7 +60,7 @@ frappe.ready(function () {
             }
         });
 
-        // Also inject a clearly-labelled button next to Print
+        // Inject a clearly-labelled button next to Print
         var toolbar = document.querySelector(".print-toolbar, .page-head .btn-group, .page-head");
         if (toolbar) {
             var btn = document.createElement("a");
@@ -60,9 +73,7 @@ frappe.ready(function () {
         }
     }
 
-    // Run when the page is the printview
     if (window.location.pathname === "/printview") {
-        // Wait for Frappe to finish rendering the page
         var tries = 0;
         var timer = setInterval(function () {
             tries++;
@@ -72,5 +83,50 @@ frappe.ready(function () {
             }
         }, 300);
     }
+
+
+    // ── 3. Add "PDF (Playwright)" button to every Form page ────────────────
+    function install_form_pdf_button() {
+        var route = frappe.get_route();
+        // Only on Form pages with a saved document
+        if (!route || route[0] !== "Form" || !route[1] || !route[2]) return;
+        if (!cur_frm || cur_frm.is_new()) return;
+        // Don't add twice after a re-render
+        if (cur_frm._playwright_pdf_added) return;
+        cur_frm._playwright_pdf_added = true;
+
+        cur_frm.add_custom_button(__("PDF (Playwright)"), function () {
+            // Pick up whichever print format the user has selected in the
+            // form's print preview panel (if open), otherwise leave blank
+            // so the server uses the default.
+            var print_format = "";
+            var letterhead   = "";
+            try {
+                if (cur_frm.print_preview && cur_frm.print_preview.frm) {
+                    print_format = cur_frm.print_preview.print_format || "";
+                    letterhead   = cur_frm.print_preview.letterhead   || "";
+                }
+            } catch (e) { /* ignore */ }
+
+            var url = playwright_pdf_url(
+                cur_frm.doctype,
+                cur_frm.docname,
+                print_format,
+                letterhead
+            );
+            window.open(url, "_blank");
+        }, __("Print"));      // places it inside the ⋮ Print group
+    }
+
+    // Re-run every time the route changes (new form, same form refreshed, etc.)
+    // Reset the _playwright_pdf_added flag so it can be re-injected after
+    // Frappe rebuilds the toolbar on each refresh.
+    $(document).on("page-change", function () {
+        if (cur_frm) cur_frm._playwright_pdf_added = false;
+        setTimeout(install_form_pdf_button, 400);
+    });
+
+    // Also run immediately in case the page loaded directly on a form URL.
+    setTimeout(install_form_pdf_button, 800);
 
 });
