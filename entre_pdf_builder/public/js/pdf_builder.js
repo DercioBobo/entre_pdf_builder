@@ -49,7 +49,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 
-frappe.ready(function () {
+$(document).ready(function () {
 
 
     // ── Shared: build the Playwright download URL ───────────────────────────
