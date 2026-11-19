@@ -293,7 +293,23 @@ def _render_wkhtmltopdf(html, options, output):
         import importlib
         _fresh = importlib.import_module("frappe.utils.pdf")
         original = getattr(_fresh, "_original_get_pdf", _fresh.get_pdf)
-    return original(html, options, output)
+
+    try:
+        return original(html, options, output)
+    except OSError as e:
+        # wkhtmltopdf aborts the whole PDF when a single asset fails to load
+        # over HTTPS (old bundled OpenSSL vs. modern TLS on the site/CDN).
+        # Frappe only tolerates a fixed list of content errors, which does
+        # not include SSL failures — retry once ignoring failed assets.
+        msg = str(e)
+        if "SslHandshakeFailedError" not in msg and "network error" not in msg:
+            raise
+        logger.warning("PDF Builder: wkhtmltopdf network/SSL error, retrying "
+                       "with load errors ignored: %s", msg.strip().splitlines()[-1])
+        retry_options = dict(options or {})
+        retry_options["load-error-handling"] = "ignore"
+        retry_options["load-media-error-handling"] = "ignore"
+        return original(html, retry_options, output)
 
 
 # ---------------------------------------------------------------------------
