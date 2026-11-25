@@ -169,6 +169,35 @@ def get_browser():
     return _launch_for_thread()
 
 
+def close_thread_browser():
+    """
+    Close the calling thread's Chromium + Playwright driver (if any) and drop
+    it from the registry.  Must run on the thread that launched it.
+    """
+    pw = getattr(_local, "pw", None)
+    browser = getattr(_local, "browser", None)
+    _local.browser = None
+    _local.pw = None
+    if pw is None and browser is None:
+        return
+
+    with _registry_lock:
+        _registry[:] = [(p, b) for (p, b) in _registry if b is not browser]
+
+    try:
+        if browser is not None:
+            browser.close()
+    except Exception:
+        pass
+    try:
+        if pw is not None:
+            pw.stop()
+    except Exception:
+        pass
+    logger.info("PDF Builder: idle Chromium closed on thread %s",
+                threading.current_thread().name)
+
+
 def close_browser():
     """
     Close all Chromium browsers and stop all Playwright instances across

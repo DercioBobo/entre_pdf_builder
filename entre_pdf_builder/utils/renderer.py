@@ -132,41 +132,83 @@ def _map_options(options, settings):
 
 # ---------------------------------------------------------------------------
 # ---------------------------------------------------------------------------
-# Asyncio guard — Playwright sync API cannot run inside a running event loop
+# Single render thread — at most ONE Chromium per OS process
 # ---------------------------------------------------------------------------
+#
+# browser_pool keeps one Chromium per thread.  Rendering directly on Apache /
+# gunicorn request threads therefore keeps one idle browser alive per request
+# thread (5+ per process — ~1 GB on a small server), and one-off threads leak
+# a browser on every render.  Instead, every render runs on one persistent
+# thread per process, and that thread closes its browser after an idle period.
 
-def _asyncio_is_running():
-    """Return True if the calling thread has a running asyncio event loop."""
-    try:
-        import asyncio
-        return asyncio.get_event_loop().is_running()
-    except Exception:
-        return False
-
+_RENDER_THREAD_PREFIX = "entre-pdf-render"
+_BROWSER_IDLE_SECONDS = 300
 
 _render_executor = None
 _render_executor_lock = threading.Lock()
+_last_render = 0.0
 
 
-def _run_in_thread(fn, *args, **kwargs):
-    """
-    Run *fn* on a single, long-lived worker thread that has no asyncio event
-    loop, and block until the result is ready.
-
-    The thread MUST be persistent: browser_pool keeps one Chromium per
-    thread, so a fresh thread per call would launch a new Playwright driver
-    + Chromium on every render and never close them — leaking processes
-    until the OS refuses with "RuntimeError: can't start new thread".
-    One worker also serialises renders, which Playwright's sync API needs.
-    """
+def _get_executor():
     global _render_executor
     from concurrent.futures import ThreadPoolExecutor
 
     with _render_executor_lock:
         if _render_executor is None:
             _render_executor = ThreadPoolExecutor(
-                max_workers=1, thread_name_prefix="entre-pdf-render")
-    return _render_executor.submit(fn, *args, **kwargs).result()
+                max_workers=1, thread_name_prefix=_RENDER_THREAD_PREFIX)
+        return _render_executor
+
+
+def _on_render_thread():
+    return threading.current_thread().name.startswith(_RENDER_THREAD_PREFIX)
+
+
+def _close_if_idle():
+    """Runs on the render thread: close its browser if unused for a while."""
+    if time.time() - _last_render < _BROWSER_IDLE_SECONDS - 1:
+        return
+    try:
+        from entre_pdf_builder.utils.browser_pool import close_thread_browser
+        close_thread_browser()
+    except Exception:
+        logger.exception("PDF Builder: idle browser shutdown failed")
+
+
+_idle_timer = None
+
+
+def _schedule_idle_close():
+    """(Re)arm a single idle timer — never more than one sleeping thread."""
+    global _idle_timer
+    with _render_executor_lock:
+        if _idle_timer is not None:
+            _idle_timer.cancel()
+        _idle_timer = threading.Timer(
+            _BROWSER_IDLE_SECONDS,
+            lambda: _get_executor().submit(_close_if_idle),
+        )
+        _idle_timer.daemon = True
+        _idle_timer.start()
+
+
+def _run_on_render_thread(fn, *args, **kwargs):
+    """
+    Run *fn* on the process's single render thread and block for the result.
+
+    The caller's context is copied so ``frappe.local`` (request, session,
+    site, db) is visible inside *fn*.  One thread also serialises renders,
+    which Playwright's sync API requires, and has no asyncio loop.
+    """
+    import contextvars
+
+    global _last_render
+    ctx = contextvars.copy_context()
+    try:
+        return _get_executor().submit(ctx.run, fn, *args, **kwargs).result()
+    finally:
+        _last_render = time.time()
+        _schedule_idle_close()
 
 
 # ---------------------------------------------------------------------------
@@ -174,8 +216,8 @@ def _run_in_thread(fn, *args, **kwargs):
 # ---------------------------------------------------------------------------
 
 def _render_playwright(html, options, settings):
-    if _asyncio_is_running():
-        return _run_in_thread(_render_playwright, html, options, settings)
+    if not _on_render_thread():
+        return _run_on_render_thread(_render_playwright, html, options, settings)
 
     from entre_pdf_builder.utils.browser_pool import get_browser
 
@@ -613,8 +655,8 @@ def render_printview_to_pdf(doctype, name, print_format=None, letterhead=None,
 
     Used by the custom PDF button (api.download_pdf_playwright).
     """
-    if _asyncio_is_running():
-        return _run_in_thread(
+    if not _on_render_thread():
+        return _run_on_render_thread(
             render_printview_to_pdf,
             doctype, name, print_format, letterhead, no_letterhead, lang,
         )
