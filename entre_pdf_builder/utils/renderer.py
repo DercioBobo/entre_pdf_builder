@@ -221,6 +221,7 @@ def _render_playwright(html, options, settings):
 
     from entre_pdf_builder.utils.browser_pool import get_browser
 
+    html, options = _merge_html_options(html, options)
     pw_options = _map_options(options, settings)
     browser = get_browser()
 
@@ -304,10 +305,41 @@ _HIDE_TOOLBAR_CSS = """
 """
 
 
+def _merge_html_options(html, options):
+    """
+    Apply the page settings a Print Format declares in its own CSS (margins,
+    page size, orientation), exactly as Frappe's wkhtmltopdf path does via
+    ``read_options_from_html``.  Explicit *options* win over HTML ones.
+    Never raises — returns the inputs unchanged on any error.
+    """
+    options = dict(options or {})
+    try:
+        from frappe.utils.pdf import read_options_from_html
+        html, html_options = read_options_from_html(html)
+        for key, value in (html_options or {}).items():
+            options.setdefault(key, value)
+    except Exception:
+        logger.debug("PDF Builder: could not read options from HTML", exc_info=True)
+    return html, options
+
+
 def _settle(page, timeout=5000):
-    """Best-effort wait for late requests (fonts, images) without failing."""
+    """
+    Best-effort wait for late requests and web fonts without failing.
+
+    page.pdf() does not wait for @font-face / Google Fonts to finish
+    loading, so without document.fonts.ready the PDF silently falls back
+    to a system font (e.g. Arial instead of Montserrat).
+    """
     try:
         page.wait_for_load_state("networkidle", timeout=timeout)
+    except Exception:
+        pass
+    try:
+        page.evaluate("""() => Promise.race([
+            document.fonts.ready.then(() => true),
+            new Promise(r => setTimeout(() => r(false), 5000)),
+        ])""")
     except Exception:
         pass
 

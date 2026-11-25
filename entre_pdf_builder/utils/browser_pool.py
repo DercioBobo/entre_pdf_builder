@@ -163,8 +163,9 @@ def get_browser():
             "PDF Builder: browser disconnected on thread %s, relaunching",
             threading.current_thread().name,
         )
-        _local.browser = None
-        _local.pw = None
+        # Stop the old Node driver too — dropping the reference alone leaves
+        # its process (~70 MB) running forever.
+        close_thread_browser()
 
     return _launch_for_thread()
 
