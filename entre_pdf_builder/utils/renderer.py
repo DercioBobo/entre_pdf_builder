@@ -20,6 +20,7 @@ from __future__ import unicode_literals
 
 import io
 import logging
+import threading
 import time
 
 logger = logging.getLogger(__name__)
@@ -143,16 +144,29 @@ def _asyncio_is_running():
         return False
 
 
+_render_executor = None
+_render_executor_lock = threading.Lock()
+
+
 def _run_in_thread(fn, *args, **kwargs):
     """
-    Submit *fn* to a one-off ThreadPoolExecutor thread that has no asyncio
-    event loop, then block until the result is ready.
+    Run *fn* on a single, long-lived worker thread that has no asyncio event
+    loop, and block until the result is ready.
 
-    Used to escape an asyncio loop before calling Playwright sync API.
+    The thread MUST be persistent: browser_pool keeps one Chromium per
+    thread, so a fresh thread per call would launch a new Playwright driver
+    + Chromium on every render and never close them — leaking processes
+    until the OS refuses with "RuntimeError: can't start new thread".
+    One worker also serialises renders, which Playwright's sync API needs.
     """
+    global _render_executor
     from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=1) as ex:
-        return ex.submit(fn, *args, **kwargs).result()
+
+    with _render_executor_lock:
+        if _render_executor is None:
+            _render_executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="entre-pdf-render")
+    return _render_executor.submit(fn, *args, **kwargs).result()
 
 
 # ---------------------------------------------------------------------------
@@ -228,13 +242,10 @@ def _render_via_url(browser, pw_options):
             # this hides the toolbar and activates print layout
             page.emulate_media(media="print")
 
-            page.goto(printview_url, wait_until="networkidle", timeout=30000)
+            _goto_printview(page, printview_url)
 
             # Extra safety: hide any toolbar elements that survive @media print
-            page.add_style_tag(content="""
-                .print-toolbar, .page-head, .no-print,
-                #toolbar-container, .navbar { display: none !important; }
-            """)
+            page.add_style_tag(content=_HIDE_TOOLBAR_CSS)
 
             return page.pdf(**pw_options)
         finally:
@@ -243,6 +254,57 @@ def _render_via_url(browser, pw_options):
     except Exception:
         logger.exception("PDF Builder: URL navigation approach failed, falling back")
         return None
+
+
+_HIDE_TOOLBAR_CSS = """
+    .print-toolbar, .page-head, .no-print, .print-hide, .action-banner,
+    #toolbar-container, .navbar { display: none !important; }
+"""
+
+
+def _settle(page, timeout=5000):
+    """Best-effort wait for late requests (fonts, images) without failing."""
+    try:
+        page.wait_for_load_state("networkidle", timeout=timeout)
+    except Exception:
+        pass
+
+
+def _log_unreachable(url, exc):
+    """
+    Record a clear, actionable Error Log entry when the server cannot load
+    its own pages — typically a firewall / Security Group that blocks the
+    instance's own public IP (fix: map the hostname to 127.0.0.1 in
+    /etc/hosts).
+    """
+    msg = (
+        f"Headless Chromium could not load {url} from the server itself.\n"
+        f"Error: {exc}\n\n"
+        "The server probably cannot reach its own public hostname "
+        "(firewall / Security Group / DNS). Check from the server with:\n"
+        f"    curl -m 5 -sI {url.split('?')[0]}\n"
+        "Fix: add '127.0.0.1 <hostname>' to /etc/hosts, or allow the "
+        "instance's own public IP in the firewall."
+    )
+    logger.error("PDF Builder: %s", msg)
+    try:
+        import frappe
+        frappe.log_error(title="PDF Builder: site unreachable from server", message=msg)
+    except Exception:
+        pass
+
+
+def _goto_printview(page, url):
+    """
+    Navigate to *url*, waiting for 'load' (not 'networkidle', which can hang
+    on long-polling / socket.io connections), then settle briefly.
+    """
+    try:
+        page.goto(url, wait_until="load", timeout=30000)
+    except Exception as exc:
+        _log_unreachable(url, exc)
+        raise
+    _settle(page)
 
 
 def _render_via_set_content(browser, html, pw_options):
@@ -268,14 +330,27 @@ def _render_via_set_content(browser, html, pw_options):
 
         page = context.new_page()
         page.emulate_media(media="print")
-        page.set_content(html, wait_until="networkidle")
-        page.add_style_tag(content="""
-            .print-toolbar, .page-head, .no-print,
-            #toolbar-container, .navbar { display: none !important; }
-        """)
+        # set_content renders on about:blank, where the context's base_url
+        # does NOT apply — relative /assets/ and /files/ URLs would never
+        # load.  Inject a <base> so they resolve against the site.
+        page.set_content(_with_base_href(html, site_url), wait_until="load")
+        _settle(page)
+        page.add_style_tag(content=_HIDE_TOOLBAR_CSS)
         return page.pdf(**pw_options)
     finally:
         context.close()
+
+
+def _with_base_href(html, site_url):
+    """Insert ``<base href="site_url/">`` into *html* unless one exists."""
+    import re
+
+    if re.search(r"<base\s", html[:5000], re.IGNORECASE):
+        return html
+    tag = f'<base href="{site_url.rstrip("/")}/">'
+    new_html, n = re.subn(r"(<head[^>]*>)", r"\1" + tag, html, count=1,
+                          flags=re.IGNORECASE)
+    return new_html if n else tag + html
 
 
 def _render_weasyprint(html, options, settings):
@@ -294,22 +369,11 @@ def _render_wkhtmltopdf(html, options, output):
         _fresh = importlib.import_module("frappe.utils.pdf")
         original = getattr(_fresh, "_original_get_pdf", _fresh.get_pdf)
 
-    try:
-        return original(html, options, output)
-    except OSError as e:
-        # wkhtmltopdf aborts the whole PDF when a single asset fails to load
-        # over HTTPS (old bundled OpenSSL vs. modern TLS on the site/CDN).
-        # Frappe only tolerates a fixed list of content errors, which does
-        # not include SSL failures — retry once ignoring failed assets.
-        msg = str(e)
-        if "SslHandshakeFailedError" not in msg and "network error" not in msg:
-            raise
-        logger.warning("PDF Builder: wkhtmltopdf network/SSL error, retrying "
-                       "with load errors ignored: %s", msg.strip().splitlines()[-1])
-        retry_options = dict(options or {})
-        retry_options["load-error-handling"] = "ignore"
-        retry_options["load-media-error-handling"] = "ignore"
-        return original(html, retry_options, output)
+    # Deliberately no "ignore load errors" retry here: when assets cannot be
+    # fetched (SSL/network), an error is far better than a silently unstyled
+    # PDF.  Network errors usually mean the server cannot reach its own
+    # hostname — see _log_unreachable().
+    return original(html, options, output)
 
 
 # ---------------------------------------------------------------------------
@@ -584,13 +648,10 @@ def render_printview_to_pdf(doctype, name, print_format=None, letterhead=None,
 
         page = context.new_page()
         page.emulate_media(media="print")
-        page.goto(printview_url, wait_until="networkidle", timeout=30000)
+        _goto_printview(page, printview_url)
 
         # Hide toolbar elements that survive @media print
-        page.add_style_tag(content="""
-            .print-toolbar, .page-head, .no-print,
-            #toolbar-container, .navbar { display: none !important; }
-        """)
+        page.add_style_tag(content=_HIDE_TOOLBAR_CSS)
 
         return page.pdf(**pw_options)
     finally:
